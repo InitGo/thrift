@@ -8,6 +8,10 @@
 #include <thrift/transport/TBufferTransports.h>
 
 #include <iostream>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
 
 using namespace ::apache::thrift;
 using namespace ::apache::thrift::protocol;
@@ -17,6 +21,60 @@ using namespace ::apache::thrift::server;
 using namespace  ::match_service;
 
 using namespace std;
+
+
+struct Task
+{
+  User user;
+  string type;
+};
+
+struct MessageQueue
+{
+  queue<Task> q;
+  mutex m;
+  condition_variable cv;
+}message_queue;
+
+
+class Pool
+{
+  public:
+    void save_result(int a, int b)
+    {
+      printf("Match Result: %d %d\n", a, b);
+    }
+
+    void match()
+    {
+      while(users.size() > 1)
+      {
+        auto a = users[0], b = users[1];
+        users.erase(users.begin());
+        users.erase(users.begin());
+        
+        save_result(a.id, b.id);
+      }
+    }
+
+    void add(User user)
+    {
+      users.push_back(user);
+    }
+
+    void remove(User user)
+    {
+      for (uint32_t i = 0; i < users.size(); i ++ )
+        if (user.id == users[i].id)
+        {
+          users.erase(users.begin() + i);
+          break;
+        }
+    }
+
+  private:
+    vector<User> users;
+}pool;
 
 class MatchHandler : virtual public MatchIf {
  public:
@@ -28,6 +86,14 @@ class MatchHandler : virtual public MatchIf {
     // Your implementation goes here
     printf("add_user\n");
 
+    //给消息队列里的操作加上消息队列的锁mutex m，这样封装不需要显示地解锁，当函数执行结束，本地变量自然消失
+    //用一个mutex m去初始化lck，同时只能有一个lck
+    unique_lock<mutex> lck(message_queue.m);
+    message_queue.q.push({user, "add"});
+    message_queue.cv.notify_all();  //在这里使用条件变量：唤醒所有等待的线程
+    //notify_one() 唤醒一个线程
+    //notify_all() 唤醒所有线程，随机执行一个
+
     return 0;
   }
 
@@ -35,10 +101,49 @@ class MatchHandler : virtual public MatchIf {
     // Your implementation goes here
     printf("remove_user\n");
 
+    unique_lock<mutex> lck(message_queue.m);
+    message_queue.q.push({user, "remove"});
+    message_queue.cv.notify_all();
+
     return 0;
   }
 
 };
+
+
+void consume_task()
+{
+  while (true)
+  {
+    //给线程上锁
+    unique_lock<mutex> lck(message_queue.m);
+    
+    if (message_queue.q.empty())
+    {
+      //如果是空的队列，说明没有玩家进入匹配，则应该阻塞 匹配线程
+      //使用条件变量来阻塞线程
+      //条件变量.wait(lck): 先将锁释放，然后阻塞这个线
+      //直到其他地方使用条件变量将这个线程唤醒，它才继续执行
+      message_queue.cv.wait(lck);
+      continue;
+    }
+
+    else
+    {
+      auto task = message_queue.q.front();
+      message_queue.q.pop();
+
+      //这里先解锁再去执行task，否则持有锁的时间太长
+      //处理完共享的变量之后一定要及时解锁
+      lck.unlock();
+      // do task
+      if (task.type == "add") pool.add(task.user);
+      else if (task.type == "remove") pool.remove(task.user);
+
+      pool.match();
+    }
+  }
+}
 
 int main(int argc, char **argv) {
   int port = 9090;
@@ -52,6 +157,10 @@ int main(int argc, char **argv) {
   
   cout << "Start Match Server" << endl;
   
+
+  thread matching_thread(consume_task);  
+  //给函数单开一个线程，定义一个thread变量，把函数名传入
+
   server.serve();
   return 0;
 }
