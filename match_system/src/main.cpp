@@ -2,16 +2,21 @@
 // You should copy it to another filename to avoid overwriting it.
 
 #include "match_server/Match.h"
+#include "save_client/Save.h"  //添加save_client的头文件
 #include <thrift/protocol/TBinaryProtocol.h>
 #include <thrift/server/TSimpleServer.h>
 #include <thrift/transport/TServerSocket.h>
 #include <thrift/transport/TBufferTransports.h>
+#include <thrift/transport/TTransportUtils.h>  //把client教程需要的头文件加起来
+#include <thrift/transport/TSocket.h>
+
 
 #include <iostream>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
 #include <queue>
+#include <vector>
 
 using namespace ::apache::thrift;
 using namespace ::apache::thrift::protocol;
@@ -19,6 +24,7 @@ using namespace ::apache::thrift::transport;
 using namespace ::apache::thrift::server;
 
 using namespace  ::match_service;
+using namespace  ::save_service;  //添加save.thrift的命名空间
 
 using namespace std;
 
@@ -43,6 +49,25 @@ class Pool
     void save_result(int a, int b)
     {
       printf("Match Result: %d %d\n", a, b);
+
+      std::shared_ptr<TTransport> socket(new TSocket("123.57.47.211", 9090));  //修改服务器所在的地址
+      std::shared_ptr<TTransport> transport(new TBufferedTransport(socket));
+      std::shared_ptr<TProtocol> protocol(new TBinaryProtocol(transport));
+      SaveClient client(protocol);
+
+      try {
+        transport->open();
+
+        printf("success link");
+
+        int res = client.save_data("acs_6744", "9e44a15f", a, b);
+        if (!res) puts("Success!");
+        else puts("Failed.");
+
+        transport->close();
+      } catch (TException& tx) {
+        cout << "ERROR: " << tx.what() << endl;
+      }
     }
 
     void match()
